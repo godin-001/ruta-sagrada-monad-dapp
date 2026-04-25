@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ChevronRight,
@@ -16,7 +17,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useAccount, useConnect, useDisconnect } from "wagmi";
+import { useAccount, useConnect, useDisconnect, useSwitchChain } from "wagmi";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,26 +39,100 @@ import { cn, formatMono } from "@/lib/utils";
 
 const monadExplorerUrl = monadTestnet.blockExplorers?.default?.url ?? "https://testnet.monadexplorer.com";
 
+type EthereumProvider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+};
+
 export function DashboardShell() {
   const { address, isConnected, chain } = useAccount();
-  const { connect, connectors, isPending } = useConnect();
+  const { connectAsync, connectors, error, isPending } = useConnect();
   const { disconnect } = useDisconnect();
+  const { switchChainAsync, isPending: isSwitchPending } = useSwitchChain();
   const [reiAlias, setReiAlias] = useState(reiDefaults.alias);
   const [reiIntention, setReiIntention] = useState(reiDefaults.intention);
   const [reiPledge, setReiPledge] = useState(reiDefaults.pledge);
   const [copied, setCopied] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [isAddingNetwork, setIsAddingNetwork] = useState(false);
+  const [connectingConnectorId, setConnectingConnectorId] = useState<string | null>(null);
 
   const completion = useMemo(
     () => stationFlow.reduce((acc, station) => acc + station.progress, 0) / stationFlow.length,
     [],
   );
 
-  const activeConnector = connectors[0];
+  const availableConnectors = useMemo(
+    () => connectors.filter((connector, index, list) => list.findIndex((item) => item.id === connector.id) === index),
+    [connectors],
+  );
+
+  const hasInjectedWallet = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return Boolean((window as Window & { ethereum?: EthereumProvider }).ethereum);
+  }, []);
+
+  const visibleWalletError = walletError ?? error?.message ?? null;
 
   const copyAddress = async () => {
     await navigator.clipboard.writeText(proactibleDemoDonationAddress);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
+  };
+
+  const addMonadNetwork = async () => {
+    if (typeof window === "undefined") return;
+
+    const provider = (window as Window & { ethereum?: EthereumProvider }).ethereum;
+
+    if (!provider) {
+      setWalletError("No detecté una wallet inyectada. Abre la app en MetaMask, Rabby o un navegador con wallet.");
+      return;
+    }
+
+    setWalletError(null);
+    setIsAddingNetwork(true);
+
+    try {
+      await provider.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: `0x${monadTestnet.id.toString(16)}`,
+            chainName: monadTestnet.name,
+            nativeCurrency: monadTestnet.nativeCurrency,
+            rpcUrls: monadTestnet.rpcUrls.default.http,
+            blockExplorerUrls: [monadExplorerUrl],
+          },
+        ],
+      });
+    } catch (networkError) {
+      setWalletError(networkError instanceof Error ? networkError.message : "No pude agregar Monad Testnet automáticamente.");
+    } finally {
+      setIsAddingNetwork(false);
+    }
+  };
+
+  const handleConnect = async (connectorId?: string) => {
+    const connector = availableConnectors.find((item) => item.id === connectorId) ?? availableConnectors[0];
+
+    if (!connector) {
+      setWalletError("No encontré un connector disponible. Instala MetaMask o Rabby y recarga la página.");
+      return;
+    }
+
+    setWalletError(null);
+    setConnectingConnectorId(connector.id);
+
+    try {
+      const result = await connectAsync({ connector });
+      if (result.chainId !== monadTestnet.id) {
+        await switchChainAsync({ chainId: monadTestnet.id });
+      }
+    } catch (connectError) {
+      setWalletError(connectError instanceof Error ? connectError.message : "No pude conectar la wallet.");
+    } finally {
+      setConnectingConnectorId(null);
+    }
   };
 
   return (
@@ -92,9 +167,9 @@ export function DashboardShell() {
                 ))}
               </div>
 
-              <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="flex flex-col gap-3">
                 {isConnected ? (
-                  <>
+                  <div className="flex flex-col gap-3 sm:flex-row">
                     <Button size="lg" className="justify-between sm:min-w-52" onClick={() => disconnect()}>
                       <span className="flex items-center gap-2"><Wallet className="h-4 w-4" /> {address?.slice(0, 6)}…{address?.slice(-4)}</span>
                       <span className="text-xs text-zinc-900/70">Desconectar</span>
@@ -102,21 +177,59 @@ export function DashboardShell() {
                     <Button variant="secondary" size="lg" asChild>
                       <a href="#rei-form">Continuar ritual <ArrowRight className="h-4 w-4" /></a>
                     </Button>
-                  </>
+                    {chain?.id !== monadTestnet.id ? (
+                      <Button variant="secondary" size="lg" onClick={() => addMonadNetwork()} disabled={isAddingNetwork || isSwitchPending}>
+                        {isAddingNetwork || isSwitchPending ? "Configurando Monad…" : "Agregar Monad Testnet"}
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : (
                   <>
-                    <Button
-                      size="lg"
-                      className="sm:min-w-52"
-                      onClick={() => activeConnector && connect({ connector: activeConnector })}
-                      disabled={!activeConnector || isPending}
-                    >
-                      <Wallet className="h-4 w-4" />
-                      {isPending ? "Conectando wallet…" : "Conectar wallet"}
-                    </Button>
-                    <Button variant="secondary" size="lg" asChild>
-                      <a href={`#proactible-wallet`}>Ver wallet demo Proactible <ChevronRight className="h-4 w-4" /></a>
-                    </Button>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                      {availableConnectors.length > 0 ? (
+                        availableConnectors.map((connector) => (
+                          <Button
+                            key={connector.uid}
+                            size="lg"
+                            className="sm:min-w-52"
+                            onClick={() => handleConnect(connector.id)}
+                            disabled={isPending}
+                          >
+                            <Wallet className="h-4 w-4" />
+                            {isPending && connectingConnectorId === connector.id
+                              ? `Conectando ${connector.name}…`
+                              : `Conectar ${connector.name}`}
+                          </Button>
+                        ))
+                      ) : (
+                        <Button size="lg" className="sm:min-w-52" disabled>
+                          <Wallet className="h-4 w-4" />
+                          Wallet no detectada
+                        </Button>
+                      )}
+
+                      <Button variant="secondary" size="lg" onClick={() => addMonadNetwork()} disabled={isAddingNetwork}>
+                        {isAddingNetwork ? "Agregando red…" : "Agregar Monad Testnet"}
+                      </Button>
+
+                      <Button variant="secondary" size="lg" asChild>
+                        <a href="#proactible-wallet">Ver wallet demo Proactible <ChevronRight className="h-4 w-4" /></a>
+                      </Button>
+                    </div>
+
+                    {!hasInjectedWallet ? (
+                      <div className="rounded-3xl border border-rose-300/20 bg-rose-300/10 p-4 text-sm text-rose-50/90">
+                        <p className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> No detecté una wallet en este navegador.</p>
+                        <p className="mt-2 text-rose-50/80">Ábrelo con MetaMask, Rabby o el navegador interno de una wallet Web3 y vuelve a intentar.</p>
+                      </div>
+                    ) : null}
+
+                    {visibleWalletError ? (
+                      <div className="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-50/90">
+                        <p className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Error de conexión</p>
+                        <p className="mt-2 break-words text-amber-50/80">{visibleWalletError}</p>
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -349,4 +462,3 @@ export function DashboardShell() {
     </main>
   );
 }
-

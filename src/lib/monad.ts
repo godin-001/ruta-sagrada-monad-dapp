@@ -1,5 +1,5 @@
 import { createConfig, fallback, http } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { injected, metaMask } from "wagmi/connectors";
 import type { Chain } from "viem";
 
 const monadRpcUrl =
@@ -37,10 +37,17 @@ export const proactibleDemoDonationAddress =
 export const appConfig = createConfig({
   chains: [monadTestnet],
   connectors: [
+    metaMask({
+      dappMetadata: {
+        name: "Ruta Sagrada Monad dApp",
+        url: "https://ruta-sagrada-dapp.vercel.app",
+      },
+    }),
     injected({
       shimDisconnect: true,
     }),
   ],
+  multiInjectedProviderDiscovery: true,
   transports: {
     [monadTestnet.id]: fallback([http(monadRpcUrl)]),
   },
