@@ -10,9 +10,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
-    <WagmiProvider config={appConfig}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    </WagmiProvider>
+    <QueryClientProvider client={queryClient}>
+      <WagmiProvider config={appConfig}>{children}</WagmiProvider>
+    </QueryClientProvider>
   );
 }
 
